@@ -1,13 +1,13 @@
 import { orchestrate, createStep } from '../src';
 
 // Example steps
-const authStep = createStep('auth', async (context) => {
+const authStep = createStep('auth', async (context: any) => {
   // Simulate API call
   await new Promise(resolve => setTimeout(resolve, 100));
   return { token: 'abc123', userId: 1 };
 });
 
-const fetchUserStep = createStep('fetchUser', async (context) => {
+const fetchUserStep = createStep('fetchUser', async (context: any) => {
   // Access result from previous step
   const authResult = context.results.auth.data;
   console.log(`Using token: ${authResult.token}`);
@@ -17,7 +17,7 @@ const fetchUserStep = createStep('fetchUser', async (context) => {
   return { id: 1, name: 'John Doe', email: 'john@example.com' };
 });
 
-const sendEmailStep = createStep('sendEmail', async (context) => {
+const sendEmailStep = createStep('sendEmail', async (context: any) => {
   const user = context.results.fetchUser.data;
   
   // Simulate email sending
@@ -27,7 +27,7 @@ const sendEmailStep = createStep('sendEmail', async (context) => {
   return { success: true, messageId: 'msg_123' };
 }, {
   retries: 2,
-  fallback: async (error, context) => {
+  fallback: async (error: Error, context: any) => {
     console.log('Email service failed, logging to database instead');
     return { success: false, fallbackUsed: true };
   }
@@ -42,10 +42,10 @@ async function runExample() {
       maxRetries: 1,
       stopOnFailure: false,
       logger: {
-        info: (msg) => console.log(`📝 ${msg}`),
-        error: (msg) => console.error(`❌ ${msg}`),
-        warn: (msg) => console.warn(`⚠️ ${msg}`),
-        debug: (msg) => console.debug(`🔍 ${msg}`)
+        info: (msg: string) => console.log(`📝 ${msg}`),
+        error: (msg: string) => console.error(`❌ ${msg}`),
+        warn: (msg: string) => console.warn(`⚠️ ${msg}`),
+        debug: (msg: string) => console.debug(`🔍 ${msg}`)
       }
     }
   );
@@ -55,7 +55,7 @@ async function runExample() {
   console.log(`Duration: ${result.duration}ms`);
   console.log(`Steps executed: ${Object.keys(result.results).length}`);
   
-  Object.entries(result.results).forEach(([name, stepResult]) => {
+  Object.entries(result.results).forEach(([name, stepResult]: [string, any]) => {
     console.log(`\nStep: ${name}`);
     console.log(`  Status: ${stepResult.status}`);
     console.log(`  Duration: ${stepResult.duration}ms`);
