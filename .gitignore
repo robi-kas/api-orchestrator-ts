@@ -1,8 +1,50 @@
+# Dependencies
 node_modules/
+.npm
+.pnpm
+.yarn
+
+# Build output
 dist/
 coverage/
-*.log
+
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+*.pid
+*.seed
+*.pid.lock
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+*.temp
+
+# Test files
+*.test.js
+*.test.ts
