@@ -1,0 +1,37 @@
+{
+  "name": "api-orchestrator-ts",
+  "version": "1.0.0",
+  "description": "Build an API Orchestrator Library in TypeScript (30-Day GitHub Commit Challenge)\r Project Goal: Create a lightweight, framework-agnostic TypeScript library called \"api-orchestrator-ts\" that simplifies managing complex API workflows in modern apps. Target devs building SaaS, e-com, or AI backends who struggle with chaining multiple API calls (e.g., auth → payment → notification), handling errors, retries, rate limits, and fallbacks without brittle custom code. Inspired by better-auth's plug-and-play vibe, make this lib declarative and extensible to slash integration time and boost reliability. Open-source it on GitHub, commit every day for 30 days to build momentum, gather feedback, and aim for 1k+ stars by solving a universal dev frustration.\r Core Problem It Solves: In 2025, apps rely on distributed systems with multiple APIs, but orchestrating them is chaos—cascading failures from one bad call, manual retries/backoffs, auth token refreshes, and no easy way to log/monitor flows. Existing tools (Axios for basics, AWS Step Functions for cloud-locked overkill) leave gaps. Your lib fills this: a simple orchestrate API for defining flows, auto-handling resilience, and plugins for common services like Stripe or Twilio.\r Key Features to Implement:",
+  "main": "index.js",
+  "dependencies": {
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.4",
+    "arg": "^4.1.3",
+    "create-require": "^1.1.1",
+    "diff": "^4.0.2",
+    "make-error": "^1.3.6",
+    "p-queue": "^9.0.1",
+    "p-retry": "^7.1.0",
+    "ts-node": "^10.9.2",
+    "undici-types": "^7.16.0",
+    "v8-compile-cache-lib": "^3.0.1",
+    "yn": "^3.1.1"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
+    "eslint": "^9.39.1",
+    "jest": "^30.2.0",
+    "prettier": "^3.7.4",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.9.3"
+  }
+}
