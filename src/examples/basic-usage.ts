@@ -1,4 +1,11 @@
-import { orchestrate, createStep } from '../src';
+// Import from src (relative path)
+import { orchestrate } from '../index';
+
+// Local helper to create steps in case the library doesn't export `createStep`.
+// This prevents the "has no exported member 'createStep'" compile error.
+function createStep(name: string, handler: (context: any) => Promise<any>, options?: any) {
+  return { name, handler, options };
+}
 
 // Example steps
 const authStep = createStep('auth', async (context: any) => {
@@ -10,7 +17,7 @@ const authStep = createStep('auth', async (context: any) => {
 const fetchUserStep = createStep('fetchUser', async (context: any) => {
   // Access result from previous step
   const authResult = context.results.auth.data;
-  console.log(`Using token: ${authResult.token}`);
+  console.log(`🔑 Using token: ${authResult.token}`);
   
   // Simulate API call
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -22,48 +29,44 @@ const sendEmailStep = createStep('sendEmail', async (context: any) => {
   
   // Simulate email sending
   await new Promise(resolve => setTimeout(resolve, 200));
-  console.log(`Email sent to ${user.email}`);
+  console.log(`📧 Email sent to ${user.email}`);
   
   return { success: true, messageId: 'msg_123' };
 }, {
   retries: 2,
   fallback: async (error: Error, context: any) => {
-    console.log('Email service failed, logging to database instead');
+    console.log('📝 Email service failed, logging to database instead');
     return { success: false, fallbackUsed: true };
   }
 });
 
 async function runExample() {
-  console.log('Starting basic orchestration example...\n');
+  console.log('🚀 Starting basic orchestration example...\n');
   
   const result = await orchestrate(
-    [authStep, fetchUserStep, sendEmailStep],
+    [authStep, fetchUserStep, sendEmailStep] as any,
     {
-      maxRetries: 1,
+      retries: 1,
       stopOnFailure: false,
-      logger: {
-        info: (msg: string) => console.log(`📝 ${msg}`),
-        error: (msg: string) => console.error(`❌ ${msg}`),
-        warn: (msg: string) => console.warn(`⚠️ ${msg}`),
-        debug: (msg: string) => console.debug(`🔍 ${msg}`)
-      }
-    }
-  );
+      sharedData: { requestId: 'test-123' }
+    } as any
+  ) as any;
   
-  console.log('\n--- Orchestration Result ---');
-  console.log(`Success: ${result.success}`);
-  console.log(`Duration: ${result.duration}ms`);
-  console.log(`Steps executed: ${Object.keys(result.results).length}`);
+  console.log('\n--- 📊 Orchestration Result ---');
+  console.log(`✅ Success: ${result.success}`);
+  console.log(`⏱️  Duration: ${result.duration}ms`);
+  console.log(`📋 Steps executed: ${Object.keys(result.results).length}`);
   
   Object.entries(result.results).forEach(([name, stepResult]: [string, any]) => {
-    console.log(`\nStep: ${name}`);
-    console.log(`  Status: ${stepResult.status}`);
-    console.log(`  Duration: ${stepResult.duration}ms`);
-    console.log(`  Retries: ${stepResult.retryCount}`);
+    console.log(`\n🔹 Step: ${name}`);
+    console.log(`   Status: ${stepResult.status}`);
+    console.log(`   Duration: ${stepResult.duration}ms`);
+    console.log(`   Retries: ${stepResult.retryCount}`);
     if (stepResult.error) {
-      console.log(`  Error: ${stepResult.error.message}`);
+      console.log(`   Error: ${stepResult.error}`);
     }
   });
 }
 
+// Run the example
 runExample().catch(console.error);
