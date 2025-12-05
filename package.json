@@ -7,33 +7,31 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "jest",
-    "start": "node dist/index.js",
     "example": "npx ts-node examples/basic-usage.ts",
-    "clean": "rm -rf dist"
+    "retry-demo": "npx ts-node examples/retry-demo.ts",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["api", "orchestration", "typescript", "workflow"],
+  "keywords": [
+    "api",
+    "orchestration",
+    "typescript",
+    "workflow"
+  ],
   "author": "Robi Kas",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0",
-    "ts-node": "^10.9.0"
+    "@types/p-retry": "^3.0.1",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
   },
   "dependencies": {
-    "p-retry": "^5.0.0",
-    "p-queue": "^7.0.0"
+    "p-queue": "^7.0.0",
+    "p-retry": "^4.6.2"
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest",
-    "start": "node dist/index.js",
-    "example": "npx ts-node ./examples/basic-usage.ts",
-    "clean": "rm -rf dist"
   }
-
 }

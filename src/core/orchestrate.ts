@@ -1,325 +1,255 @@
-import { 
-  StepConfig, 
-  OrchestrationContext, 
-  OrchestrationConfig, 
-  StepResult, 
-  OrchestrationResult,
-  Logger,
-  Plugin
-} from '../types';
-
-class DefaultLogger implements Logger {
-  info(message: string, meta?: Record<string, any>) {
-    console.log(`[INFO] ${message}`, meta || '');
-  }
+export async function orchestrate(steps: any[], config: any = {}) {
+  // Dynamic import of p-retry to handle ESM
+  const pRetryModule = await import('p-retry');
+  const pRetry = pRetryModule.default;
+  const AbortError = pRetryModule.AbortError;
   
-  error(message: string, meta?: Record<string, any>) {
-    console.error(`[ERROR] ${message}`, meta || '');
-  }
+  console.log('🎯 Orchestrator starting...');
   
-  warn(message: string, meta?: Record<string, any>) {
-    console.warn(`[WARN] ${message}`, meta || '');
-  }
-  
-  debug(message: string, meta?: Record<string, any>) {
-    console.debug(`[DEBUG] ${message}`, meta || '');
-  }
-}
-
-export async function orchestrate<T extends Record<string, any> = Record<string, any>>(
-  steps: StepConfig[],
-  config: OrchestrationConfig = {}
-): Promise<OrchestrationResult> {
   const startTime = Date.now();
-  const logger: Logger = config.logger || new DefaultLogger();
+  const results: any = {};
+  const errors: any[] = [];
   
-  const context: OrchestrationContext = {
-    results: {},
+  const context = { 
+    results, 
     sharedData: config.sharedData || {},
     attempt: 0,
     startTime,
-    config: {
-      ...config,
-      logger
-    }
+    config,
+    errors
   };
-
-  // Initialize plugins
-  if (config.plugins) {
-    for (const plugin of config.plugins) {
-      if (plugin.initialize) {
-        plugin.initialize(config);
-      }
-    }
-  }
-
-  logger.info(`Starting orchestration with ${steps.length} steps`, { 
+  
+  const logger = config.logger || {
+    info: (msg: string, meta?: any) => console.log(`[INFO] ${msg}`, meta || ''),
+    error: (msg: string, meta?: any) => console.error(`[ERROR] ${msg}`, meta || ''),
+    warn: (msg: string, meta?: any) => console.warn(`[WARN] ${msg}`, meta || ''),
+    debug: (msg: string, meta?: any) => console.debug(`[DEBUG] ${msg}`, meta || '')
+  };
+  
+  logger.info(`Starting orchestration with ${steps.length} steps`, {
     stepCount: steps.length,
     config: {
       parallel: config.parallel || false,
-      stopOnFailure: config.stopOnFailure || false
+      stopOnFailure: config.stopOnFailure || false,
+      maxRetries: config.maxRetries || 0
     }
   });
-
-  const errors: Error[] = [];
-  let success = true;
-
-  try {
-    if (config.parallel) {
-      await executeParallel(steps, context, config, logger);
-    } else {
-      await executeSequential(steps, context, config, logger);
+  
+  for (const step of steps) {
+    logger.info(`Executing step: ${step.name}`, { step: step.name });
+    const stepStart = Date.now();
+    let retryCount = 0;
+    let lastError: any = null;
+    
+    try {
+      // Determine retry configuration for this step
+      const stepRetries = step.retries !== undefined ? step.retries : config.maxRetries || 0;
+      const stepTimeout = step.timeout || config.timeout;
+      
+      // Execute with retry logic
+      const data = await executeWithRetry(step, context, {
+        retries: stepRetries,
+        timeout: stepTimeout,
+        logger,
+        stepName: step.name,
+        pRetry,
+        AbortError
+      });
+      
+      const duration = Date.now() - stepStart;
+      
+      results[step.name] = {
+        data,
+        status: 'success',
+        duration,
+        retryCount,
+        metadata: step.metadata
+      };
+      
+      logger.info(`Step ${step.name} succeeded`, {
+        step: step.name,
+        duration,
+        retryCount
+      });
+      
+      // Call step's onSuccess callback if provided
+      if (step.onSuccess) {
+        step.onSuccess(data, context);
+      }
+      
+    } catch (error: any) {
+      const duration = Date.now() - stepStart;
+      lastError = error;
+      
+      logger.error(`Step ${step.name} failed after ${retryCount} retries`, {
+        step: step.name,
+        error: error.message,
+        retryCount,
+        duration
+      });
+      
+      // Try fallback if provided
+      if (step.fallback) {
+        logger.info(`Attempting fallback for step: ${step.name}`);
+        try {
+          const fallbackData = await step.fallback(error, context);
+          
+          results[step.name] = {
+            data: fallbackData,
+            status: 'success',
+            duration,
+            retryCount,
+            metadata: { ...step.metadata, usedFallback: true }
+          };
+          
+          logger.info(`Fallback succeeded for step: ${step.name}`);
+          continue; // Move to next step
+        } catch (fallbackError: any) {
+          logger.error(`Fallback also failed for step: ${step.name}`, {
+            error: fallbackError.message
+          });
+          lastError = fallbackError;
+        }
+      }
+      
+      // Record failure
+      results[step.name] = {
+        error: lastError.message,
+        status: 'failed',
+        duration,
+        retryCount,
+        metadata: step.metadata
+      };
+      errors.push(lastError);
+      
+      // Call step's onError callback if provided
+      if (step.onError) {
+        step.onError(lastError, context);
+      }
+      
+      // Stop if configured to stop on failure
+      if (config.stopOnFailure) {
+        logger.warn(`Stopping orchestration due to failed step: ${step.name}`);
+        break;
+      }
     }
-
-    // Check if any steps failed
-    success = Object.values(context.results).every(result => 
-      result.status === 'success' || result.status === 'skipped'
-    );
-  } catch (error) {
-    success = false;
-    errors.push(error as Error);
-    logger.error('Orchestration failed with error', { error });
   }
-
-  const duration = Date.now() - startTime;
-
+  
+  const totalDuration = Date.now() - startTime;
+  const success = errors.length === 0;
+  
   logger.info(`Orchestration completed`, {
     success,
-    duration,
+    duration: totalDuration,
     totalSteps: steps.length,
-    successfulSteps: Object.values(context.results).filter(r => r.status === 'success').length,
-    failedSteps: Object.values(context.results).filter(r => r.status === 'failed').length
+    successfulSteps: Object.values(results).filter((r: any) => r.status === 'success').length,
+    failedSteps: Object.values(results).filter((r: any) => r.status === 'failed').length,
+    totalErrors: errors.length
   });
-
+  
   return {
     success,
-    results: context.results,
-    duration,
+    results,
+    duration: totalDuration,
     errors,
     sharedData: context.sharedData
   };
 }
-
-async function executeSequential(
-  steps: StepConfig[],
-  context: OrchestrationContext,
-  config: OrchestrationConfig,
-  logger: Logger
-): Promise<void> {
-  for (const step of steps) {
-    // Check if step is enabled
-    const isEnabled = typeof step.enabled === 'function' 
-      ? step.enabled(context)
-      : step.enabled !== false;
-
-    if (!isEnabled) {
-      logger.debug(`Skipping disabled step: ${step.name}`);
-      context.results[step.name] = {
-        status: 'skipped',
-        duration: 0,
-        retryCount: 0
-      };
-      continue;
+import pRetry, { AbortError } from 'p-retry';
+async function executeWithRetry(
+  step: any, 
+  context: any, 
+  options: {
+    retries: number;
+    timeout?: number;
+    logger: any;
+    stepName: string;
+    pRetry: any;
+    AbortError: any;
+  }
+) {
+  const { retries, timeout, logger, stepName, pRetry, AbortError } = options;
+  
+  // If no retries needed, execute directly
+  if (retries === 0) {
+    if (timeout) {
+      return await executeWithTimeout(step, context, timeout);
     }
-
-    // Check dependencies
-    if (step.dependsOn && step.dependsOn.length > 0) {
-      const failedDependency = step.dependsOn.find(dep => 
-        context.results[dep] && context.results[dep].status !== 'success'
-      );
+    return await step.execute(context);
+  }
+  
+  // Configure retry options
+  const retryOptions = {
+    retries,
+    factor: 2, // Exponential backoff factor
+    minTimeout: 1000, // 1 second minimum wait
+    maxTimeout: 10000, // 10 seconds maximum wait
+    randomize: true, // Add some randomness to avoid thundering herd
+    onFailedAttempt: (error: any) => {
+      const attempt = error.attemptNumber;
+      const retriesLeft = error.retriesLeft;
       
-      if (failedDependency) {
-        logger.debug(`Skipping step ${step.name} due to failed dependency: ${failedDependency}`);
-        context.results[step.name] = {
-          status: 'skipped',
-          duration: 0,
-          retryCount: 0,
-          error: new Error(`Dependency ${failedDependency} failed`)
-        };
-        continue;
-      }
-    }
-
-    try {
-      const result = await executeStep(step, context, logger);
-      context.results[step.name] = result;
-
-      if (result.status === 'failed' && config.stopOnFailure) {
-        logger.warn(`Stopping orchestration due to failed step: ${step.name}`);
-        break;
-      }
-    } catch (error) {
-      context.results[step.name] = {
-        status: 'failed',
-        duration: 0,
-        retryCount: 0,
-        error: error as Error
-      };
+      logger.warn(`Attempt ${attempt} failed for ${stepName}. ${retriesLeft} retries left`, {
+        step: stepName,
+        attempt,
+        retriesLeft,
+        nextRetryIn: error.nextRetry,
+        error: error.message
+      });
       
-      if (config.stopOnFailure) {
-        throw error;
+      // Check if we should abort retries for certain errors
+      if (shouldAbortRetry(error)) {
+        logger.error(`Aborting retries for ${stepName} due to non-retryable error`, {
+          step: stepName,
+          error: error.message
+        });
+        throw new AbortError(error);
       }
     }
-  }
-}
-
-async function executeParallel(
-  steps: StepConfig[],
-  context: OrchestrationContext,
-  config: OrchestrationConfig,
-  logger: Logger
-): Promise<void> {
-  const executions = steps.map(async (step) => {
-    try {
-      const result = await executeStep(step, context, logger);
-      context.results[step.name] = result;
-      return result;
-    } catch (error) {
-      const result: StepResult = {
-        status: 'failed',
-        duration: 0,
-        retryCount: 0,
-        error: error as Error
-      };
-      context.results[step.name] = result;
-      return result;
-    }
-  });
-
-  await Promise.all(executions);
-}
-
-async function executeStep(
-  step: StepConfig,
-  context: OrchestrationContext,
-  logger: Logger
-): Promise<StepResult> {
-  const startTime = Date.now();
-  let retryCount = 0;
-  let lastError: Error | undefined;
-
-  logger.info(`Executing step: ${step.name}`, { step: step.name });
-
-  // Run plugins before step
-  if (context.config.plugins) {
-    for (const plugin of context.config.plugins) {
-      if (plugin.beforeStep) {
-        await plugin.beforeStep(step, context);
-      }
-    }
-  }
-
-  const maxRetries = step.retries !== undefined ? step.retries : context.config.maxRetries || 0;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const data = await step.execute(context);
-      const duration = Date.now() - startTime;
-
-      const result: StepResult = {
-        data,
-        status: 'success',
-        duration,
-        retryCount: attempt,
-        metadata: step.metadata
-      };
-
-      logger.info(`Step ${step.name} succeeded`, {
-        step: step.name,
-        duration,
-        retryCount: attempt
-      });
-
-      // Run plugins after successful step
-      if (context.config.plugins) {
-        for (const plugin of context.config.plugins) {
-          if (plugin.afterStep) {
-            await plugin.afterStep(step, result, context);
-          }
-        }
-      }
-
-      // Run step's onSuccess callback
-      if (step.onSuccess) {
-        step.onSuccess(data, context);
-      }
-
-      return result;
-    } catch (error) {
-      lastError = error as Error;
-      retryCount = attempt;
-
-      logger.warn(`Step ${step.name} attempt ${attempt + 1}/${maxRetries + 1} failed`, {
-        step: step.name,
-        attempt: attempt + 1,
-        maxAttempts: maxRetries + 1,
-        error
-      });
-
-      // Run plugins on error
-      if (context.config.plugins) {
-        for (const plugin of context.config.plugins) {
-          if (plugin.onError) {
-            await plugin.onError(error as Error, step, context);
-          }
-        }
-      }
-
-      // Run step's onError callback
-      if (step.onError) {
-        step.onError(error as Error, context);
-      }
-
-      // If this was the last attempt, try fallback
-      if (attempt === maxRetries) {
-        if (step.fallback) {
-          logger.info(`Attempting fallback for step: ${step.name}`);
-          try {
-            const fallbackData = await step.fallback(error as Error, context);
-            const duration = Date.now() - startTime;
-            
-            const result: StepResult = {
-              data: fallbackData,
-              status: 'success',
-              duration,
-              retryCount: attempt,
-              metadata: { ...step.metadata, usedFallback: true }
-            };
-
-            logger.info(`Fallback succeeded for step: ${step.name}`);
-            return result;
-          } catch (fallbackError) {
-            lastError = fallbackError as Error;
-            logger.error(`Fallback also failed for step: ${step.name}`, { error: fallbackError });
-          }
-        }
-        
-        // No fallback or fallback failed
-        const duration = Date.now() - startTime;
-        return {
-          error: lastError,
-          status: 'failed',
-          duration,
-          retryCount: attempt,
-          metadata: step.metadata
-        };
-      }
-
-      // Wait before retry (exponential backoff)
-      if (attempt < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-
-  // Should never reach here, but just in case
-  const duration = Date.now() - startTime;
-  return {
-    error: lastError || new Error('Step execution failed'),
-    status: 'failed',
-    duration,
-    retryCount,
-    metadata: step.metadata
   };
+  
+  // Wrap execution with timeout if specified
+  const executeFn = timeout 
+    ? () => executeWithTimeout(step, context, timeout)
+    : () => step.execute(context);
+  
+  return await pRetry(executeFn, retryOptions);
+}
+
+async function executeWithTimeout(step: any, context: any, timeoutMs: number) {
+  return Promise.race([
+    step.execute(context),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Step "${step.name}" timed out after ${timeoutMs}ms`)), timeoutMs);
+    })
+  ]);
+}
+
+function shouldAbortRetry(error: any): boolean {
+  // Don't retry on certain error types
+  const abortErrors = [
+    'ECONNREFUSED', // Connection refused
+    'ENOTFOUND', // DNS lookup failed
+    'UNAUTHORIZED', // 401 Unauthorized
+    'FORBIDDEN', // 403 Forbidden
+    'NOT_FOUND', // 404 Not Found
+    'VALIDATION_ERROR' // Validation errors
+  ];
+  
+  const errorCode = error.code || error.name || '';
+  const errorMessage = error.message || '';
+  
+  // Check if error message contains abort patterns
+  for (const abortError of abortErrors) {
+    if (errorCode.includes(abortError) || errorMessage.includes(abortError)) {
+      return true;
+    }
+  }
+  
+  // Don't retry 4xx client errors (except 429 Too Many Requests)
+  if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500 && error.statusCode !== 429) {
+    return true;
+  }
+  
+  return false;
 }
