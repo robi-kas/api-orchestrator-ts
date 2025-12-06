@@ -7,18 +7,50 @@ export interface StepResult<T = any> {
   duration: number;
   retryCount: number;
   metadata?: Record<string, any>;
+  fallbackUsed?: boolean;
+  circuitBroken?: boolean;
+}
+
+export type FallbackStrategy = 
+  | 'static-value' 
+  | 'cached-data' 
+  | 'alternative-api' 
+  | 'degraded-mode' 
+  | 'custom';
+
+export interface FallbackConfig<T = any> {
+  strategy: FallbackStrategy;
+  value?: T;
+  cacheKey?: string;
+  alternativeStep?: string;
+  degradedHandler?: (context: any) => Promise<T>;
+  customHandler?: (error: Error, context: any) => Promise<T>;
+  conditions?: {
+    errorCodes?: string[];
+    maxRetriesExceeded?: boolean;
+    timeoutExceeded?: boolean;
+  };
+}
+
+export interface CircuitBreakerConfig {
+  enabled: boolean;
+  failureThreshold: number;
+  resetTimeout: number;
+  halfOpenMaxAttempts?: number;
 }
 
 export interface StepConfig<T = any, R = any> {
   name: string;
-  execute: (context: OrchestrationContext) => Promise<R>;
+  execute: (context: any) => Promise<R>;
   retries?: number;
   timeout?: number;
-  fallback?: (error: Error, context: OrchestrationContext) => Promise<R>;
+  fallback?: FallbackConfig<R> | ((error: Error, context: any) => Promise<R>);
+  fallbacks?: FallbackConfig<R>[];
+  circuitBreaker?: CircuitBreakerConfig;
   dependsOn?: string[];
-  enabled?: boolean | ((context: OrchestrationContext) => boolean);
-  onSuccess?: (result: R, context: OrchestrationContext) => void;
-  onError?: (error: Error, context: OrchestrationContext) => void;
+  enabled?: boolean | ((context: any) => boolean);
+  onSuccess?: (result: R, context: any) => void;
+  onError?: (error: Error, context: any) => void;
   metadata?: Record<string, any>;
 }
 
@@ -28,6 +60,8 @@ export interface OrchestrationContext {
   attempt: number;
   startTime: number;
   config: OrchestrationConfig;
+  circuitBreakers?: Record<string, any>;
+  cache?: Record<string, any>;
 }
 
 export interface OrchestrationConfig {
@@ -37,7 +71,9 @@ export interface OrchestrationConfig {
   stopOnFailure?: boolean;
   sharedData?: Record<string, any>;
   logger?: Logger;
-  plugins?: Plugin[];
+  plugins?: any[];
+  enableCaching?: boolean;
+  defaultCircuitBreaker?: CircuitBreakerConfig;
 }
 
 export interface Logger {
@@ -47,18 +83,11 @@ export interface Logger {
   debug: (message: string, meta?: Record<string, any>) => void;
 }
 
-export interface Plugin {
-  name: string;
-  initialize?: (config: OrchestrationConfig) => void;
-  beforeStep?: (step: StepConfig, context: OrchestrationContext) => Promise<void> | void;
-  afterStep?: (step: StepConfig, result: StepResult, context: OrchestrationContext) => Promise<void> | void;
-  onError?: (error: Error, step: StepConfig, context: OrchestrationContext) => Promise<void> | void;
-}
-
 export interface OrchestrationResult {
   success: boolean;
   results: Record<string, StepResult>;
   duration: number;
   errors: Error[];
   sharedData: Record<string, any>;
+  circuitBreakers?: Record<string, any>;
 }

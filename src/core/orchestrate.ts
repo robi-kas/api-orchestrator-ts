@@ -1,14 +1,32 @@
-export async function orchestrate(steps: any[], config: any = {}) {
+import { CircuitBreaker } from '../utils/circuit-breaker';
+import { FallbackExecutor } from '../utils/fallback-executor';
+import { 
+  StepConfig, 
+  OrchestrationConfig, 
+  OrchestrationResult,
+  CircuitBreakerConfig,
+  FallbackConfig 
+} from '../types';
+
+export async function orchestrate(
+  steps: StepConfig[], 
+  config: OrchestrationConfig = {}
+): Promise<OrchestrationResult> {
   // Dynamic import of p-retry to handle ESM
   const pRetryModule = await import('p-retry');
   const pRetry = pRetryModule.default;
   const AbortError = pRetryModule.AbortError;
+
+  // Initialize utilities
+  const circuitBreaker = new CircuitBreaker();
+  const fallbackExecutor = new FallbackExecutor();
   
   console.log('🎯 Orchestrator starting...');
   
   const startTime = Date.now();
-  const results: any = {};
-  const errors: any[] = [];
+  const results: Record<string, any> = {};
+  const errors: Error[] = [];
+  const circuitBreakers: Record<string, any> = {};
   
   const context = { 
     results, 
@@ -16,7 +34,9 @@ export async function orchestrate(steps: any[], config: any = {}) {
     attempt: 0,
     startTime,
     config,
-    errors
+    errors,
+    circuitBreakers,
+    cache: config.sharedData?.cache || {}
   };
   
   const logger = config.logger || {
@@ -26,12 +46,14 @@ export async function orchestrate(steps: any[], config: any = {}) {
     debug: (msg: string, meta?: any) => console.debug(`[DEBUG] ${msg}`, meta || '')
   };
   
+  
   logger.info(`Starting orchestration with ${steps.length} steps`, {
     stepCount: steps.length,
     config: {
       parallel: config.parallel || false,
       stopOnFailure: config.stopOnFailure || false,
-      maxRetries: config.maxRetries || 0
+      maxRetries: config.maxRetries || 0,
+      enableCaching: config.enableCaching || false
     }
   });
   
@@ -40,20 +62,23 @@ export async function orchestrate(steps: any[], config: any = {}) {
     const stepStart = Date.now();
     let retryCount = 0;
     let lastError: any = null;
+    let circuitBroken = false;
     
     try {
       // Determine retry configuration for this step
       const stepRetries = step.retries !== undefined ? step.retries : config.maxRetries || 0;
       const stepTimeout = step.timeout || config.timeout;
       
-      // Execute with retry logic
-      const data = await executeWithRetry(step, context, {
+      // Execute with circuit breaker and retry logic
+      const data = await executeStepWithFeatures(step, context, {
         retries: stepRetries,
         timeout: stepTimeout,
         logger,
         stepName: step.name,
         pRetry,
-        AbortError
+        AbortError,
+        circuitBreaker,
+        circuitConfig: step.circuitBreaker || config.defaultCircuitBreaker
       });
       
       const duration = Date.now() - stepStart;
@@ -63,13 +88,15 @@ export async function orchestrate(steps: any[], config: any = {}) {
         status: 'success',
         duration,
         retryCount,
-        metadata: step.metadata
+        metadata: step.metadata,
+        circuitBroken
       };
       
       logger.info(`Step ${step.name} succeeded`, {
         step: step.name,
         duration,
-        retryCount
+        retryCount,
+        circuitBroken
       });
       
       // Call step's onSuccess callback if provided
@@ -81,34 +108,72 @@ export async function orchestrate(steps: any[], config: any = {}) {
       const duration = Date.now() - stepStart;
       lastError = error;
       
-      logger.error(`Step ${step.name} failed after ${retryCount} retries`, {
-        step: step.name,
-        error: error.message,
-        retryCount,
-        duration
-      });
+      // Check if error is from circuit breaker
+      if (error.message.includes('Circuit breaker')) {
+        circuitBroken = true;
+        logger.warn(`Circuit breaker triggered for ${step.name}`, {
+          step: step.name,
+          error: error.message
+        });
+      } else {
+        logger.error(`Step ${step.name} failed after ${retryCount} retries`, {
+          step: step.name,
+          error: error.message,
+          retryCount,
+          duration,
+          circuitBroken
+        });
+      }
       
       // Try fallback if provided
-      if (step.fallback) {
-        logger.info(`Attempting fallback for step: ${step.name}`);
-        try {
-          const fallbackData = await step.fallback(error, context);
-          
-          results[step.name] = {
-            data: fallbackData,
-            status: 'success',
-            duration,
-            retryCount,
-            metadata: { ...step.metadata, usedFallback: true }
-          };
-          
-          logger.info(`Fallback succeeded for step: ${step.name}`);
+      const fallbacks = Array.isArray(step.fallbacks) 
+        ? step.fallbacks 
+        : step.fallback 
+        ? [step.fallback] 
+        : [];
+      
+      if (fallbacks.length > 0) {
+        logger.info(`Attempting fallback for step: ${step.name}`, {
+          fallbackCount: fallbacks.length
+        });
+        
+        let fallbackError = error;
+        let fallbackResult: any = null;
+        let usedFallbackStrategy: string | undefined;
+        
+        // Try multiple fallbacks in order
+        for (const fallback of fallbacks) {
+          try {
+            fallbackResult = await fallbackExecutor.execute(fallbackError, context, fallback);
+            usedFallbackStrategy = typeof fallback === 'function' 
+              ? 'function' 
+              : (fallback as FallbackConfig).strategy;
+            
+            logger.info(`Fallback succeeded for step: ${step.name}`, {
+              strategy: usedFallbackStrategy
+            });
+            
+            results[step.name] = {
+              data: fallbackResult,
+              status: 'success',
+              duration,
+              retryCount,
+              metadata: { ...step.metadata, usedFallback: true, fallbackStrategy: usedFallbackStrategy },
+              fallbackUsed: true,
+              circuitBroken
+            };
+            break; // Stop after first successful fallback
+          } catch (fallbackError: any) {
+            logger.warn(`Fallback failed for step: ${step.name}`, {
+              strategy: typeof fallback === 'function' ? 'function' : (fallback as FallbackConfig).strategy,
+              error: fallbackError.message
+            });
+            lastError = fallbackError;
+          }
+        }
+        
+        if (fallbackResult) {
           continue; // Move to next step
-        } catch (fallbackError: any) {
-          logger.error(`Fallback also failed for step: ${step.name}`, {
-            error: fallbackError.message
-          });
-          lastError = fallbackError;
         }
       }
       
@@ -118,7 +183,8 @@ export async function orchestrate(steps: any[], config: any = {}) {
         status: 'failed',
         duration,
         retryCount,
-        metadata: step.metadata
+        metadata: step.metadata,
+        circuitBroken
       };
       errors.push(lastError);
       
@@ -138,13 +204,23 @@ export async function orchestrate(steps: any[], config: any = {}) {
   const totalDuration = Date.now() - startTime;
   const success = errors.length === 0;
   
+  // Collect circuit breaker states
+  const circuitBreakerStates: Record<string, any> = {};
+  for (const step of steps) {
+    const state = circuitBreaker.getStateForStep(step.name);
+    if (state) {
+      circuitBreakerStates[step.name] = state;
+    }
+  }
+  
   logger.info(`Orchestration completed`, {
     success,
     duration: totalDuration,
     totalSteps: steps.length,
     successfulSteps: Object.values(results).filter((r: any) => r.status === 'success').length,
     failedSteps: Object.values(results).filter((r: any) => r.status === 'failed').length,
-    totalErrors: errors.length
+    totalErrors: errors.length,
+    circuitBreakers: Object.keys(circuitBreakerStates).length
   });
   
   return {
@@ -152,10 +228,43 @@ export async function orchestrate(steps: any[], config: any = {}) {
     results,
     duration: totalDuration,
     errors,
-    sharedData: context.sharedData
+    sharedData: context.sharedData,
+    circuitBreakers: circuitBreakerStates
   };
 }
-import pRetry, { AbortError } from 'p-retry';
+
+async function executeStepWithFeatures(
+  step: any,
+  context: any,
+  options: {
+    retries: number;
+    timeout?: number;
+    logger: any;
+    stepName: string;
+    pRetry: any;
+    AbortError: any;
+    circuitBreaker: CircuitBreaker;
+    circuitConfig?: CircuitBreakerConfig;
+  }
+) {
+  const { retries, timeout, logger, stepName, pRetry, AbortError, circuitBreaker, circuitConfig } = options;
+  
+  // Check circuit breaker
+  if (circuitConfig?.enabled) {
+    try {
+      return await circuitBreaker.execute(
+        stepName,
+        circuitConfig,
+        () => executeWithRetry(step, context, { retries, timeout, logger, stepName, pRetry, AbortError })
+      );
+    } catch (error: any) {
+      throw error;
+    }
+  }
+  
+  return executeWithRetry(step, context, { retries, timeout, logger, stepName, pRetry, AbortError });
+}
+
 async function executeWithRetry(
   step: any, 
   context: any, 
