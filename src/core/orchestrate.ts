@@ -1,3 +1,4 @@
+import { DependencyAnalyzer } from '../utils/dependency-analyzer';
 import { CircuitBreaker } from '../utils/circuit-breaker';
 import { FallbackExecutor } from '../utils/fallback-executor';
 import { 
@@ -20,6 +21,7 @@ export async function orchestrate(
   // Initialize utilities
   const circuitBreaker = new CircuitBreaker();
   const fallbackExecutor = new FallbackExecutor();
+  const dependencyAnalyzer = new DependencyAnalyzer();
   
   console.log('🎯 Orchestrator starting...');
   
@@ -57,146 +59,187 @@ export async function orchestrate(
     }
   });
   
-  for (const step of steps) {
-    logger.info(`Executing step: ${step.name}`, { step: step.name });
-    const stepStart = Date.now();
-    let retryCount = 0;
-    let lastError: any = null;
-    let circuitBroken = false;
-    
-    try {
-      // Determine retry configuration for this step
-      const stepRetries = step.retries !== undefined ? step.retries : config.maxRetries || 0;
-      const stepTimeout = step.timeout || config.timeout;
-      
-      // Execute with circuit breaker and retry logic
-      const data = await executeStepWithFeatures(step, context, {
-        retries: stepRetries,
-        timeout: stepTimeout,
+  // Determine execution mode (parallel can be `true` or a number indicating concurrency)
+  const executeInParallel = config.parallel === true || typeof config.parallel === 'number';
+  const maxConcurrent = typeof config.parallel === 'number' ? config.parallel : (config.maxConcurrent || Infinity);
+
+  if (executeInParallel) {
+    logger.info('Executing in parallel mode', { 
+      maxConcurrent,
+      totalSteps: steps.length 
+    });
+
+    // Group steps for parallel execution using dependency analyzer
+    const executionGroups = dependencyAnalyzer.groupForParallelExecution(steps);
+
+    for (const group of executionGroups) {
+      logger.info(`Executing group with ${group.steps.length} parallel steps`, {
+        stepNames: group.steps.map(s => s.name),
+        dependsOn: group.dependsOn
+      });
+
+      await executeStepsInParallel(group.steps, context, {
+        maxConcurrent,
         logger,
-        stepName: step.name,
         pRetry,
         AbortError,
         circuitBreaker,
-        circuitConfig: step.circuitBreaker || config.defaultCircuitBreaker
+        defaultCircuitBreaker: config.defaultCircuitBreaker,
+        fallbackExecutor
       });
-      
-      const duration = Date.now() - stepStart;
-      
-      results[step.name] = {
-        data,
-        status: 'success',
-        duration,
-        retryCount,
-        metadata: step.metadata,
-        circuitBroken
-      };
-      
-      logger.info(`Step ${step.name} succeeded`, {
-        step: step.name,
-        duration,
-        retryCount,
-        circuitBroken
-      });
-      
-      // Call step's onSuccess callback if provided
-      if (step.onSuccess) {
-        step.onSuccess(data, context);
+
+      // If configured to stop on failure, break out if any step failed
+      if (config.stopOnFailure) {
+        const failedStep = Object.values(results).find((r: any) => r.status === 'failed');
+        if (failedStep) {
+          logger.warn('Stopping orchestration due to failed step');
+          break;
+        }
       }
+    }
+  } else {
+    logger.info('Executing in sequential mode');
+    for (const step of steps) {
+      logger.info(`Executing step: ${step.name}`, { step: step.name });
+      const stepStart = Date.now();
+      let retryCount = 0;
+      let lastError: any = null;
+      let circuitBroken = false;
       
-    } catch (error: any) {
-      const duration = Date.now() - stepStart;
-      lastError = error;
-      
-      // Check if error is from circuit breaker
-      if (error.message.includes('Circuit breaker')) {
-        circuitBroken = true;
-        logger.warn(`Circuit breaker triggered for ${step.name}`, {
-          step: step.name,
-          error: error.message
+      try {
+        // Determine retry configuration for this step
+        const stepRetries = step.retries !== undefined ? step.retries : config.maxRetries || 0;
+        const stepTimeout = step.timeout || config.timeout;
+        
+        // Execute with circuit breaker and retry logic
+        const data = await executeStepWithFeatures(step, context, {
+          retries: stepRetries,
+          timeout: stepTimeout,
+          logger,
+          stepName: step.name,
+          pRetry,
+          AbortError,
+          circuitBreaker,
+          circuitConfig: step.circuitBreaker || config.defaultCircuitBreaker
         });
-      } else {
-        logger.error(`Step ${step.name} failed after ${retryCount} retries`, {
-          step: step.name,
-          error: error.message,
-          retryCount,
+        
+        const duration = Date.now() - stepStart;
+        
+        results[step.name] = {
+          data,
+          status: 'success',
           duration,
+          retryCount,
+          metadata: step.metadata,
+          circuitBroken
+        };
+        
+        logger.info(`Step ${step.name} succeeded`, {
+          step: step.name,
+          duration,
+          retryCount,
           circuitBroken
         });
-      }
-      
-      // Try fallback if provided
-      const fallbacks = Array.isArray(step.fallbacks) 
-        ? step.fallbacks 
-        : step.fallback 
-        ? [step.fallback] 
-        : [];
-      
-      if (fallbacks.length > 0) {
-        logger.info(`Attempting fallback for step: ${step.name}`, {
-          fallbackCount: fallbacks.length
-        });
         
-        let fallbackError = error;
-        let fallbackResult: any = null;
-        let usedFallbackStrategy: string | undefined;
+        // Call step's onSuccess callback if provided
+        if (step.onSuccess) {
+          step.onSuccess(data, context);
+        }
         
-        // Try multiple fallbacks in order
-        for (const fallback of fallbacks) {
-          try {
-            fallbackResult = await fallbackExecutor.execute(fallbackError, context, fallback);
-            usedFallbackStrategy = typeof fallback === 'function' 
-              ? 'function' 
-              : (fallback as FallbackConfig).strategy;
-            
-            logger.info(`Fallback succeeded for step: ${step.name}`, {
-              strategy: usedFallbackStrategy
-            });
-            
-            results[step.name] = {
-              data: fallbackResult,
-              status: 'success',
-              duration,
-              retryCount,
-              metadata: { ...step.metadata, usedFallback: true, fallbackStrategy: usedFallbackStrategy },
-              fallbackUsed: true,
-              circuitBroken
-            };
-            break; // Stop after first successful fallback
-          } catch (fallbackError: any) {
-            logger.warn(`Fallback failed for step: ${step.name}`, {
-              strategy: typeof fallback === 'function' ? 'function' : (fallback as FallbackConfig).strategy,
-              error: fallbackError.message
-            });
-            lastError = fallbackError;
+      } catch (error: any) {
+        const duration = Date.now() - stepStart;
+        lastError = error;
+        
+        // Check if error is from circuit breaker
+        if (error.message.includes('Circuit breaker')) {
+          circuitBroken = true;
+          logger.warn(`Circuit breaker triggered for ${step.name}`, {
+            step: step.name,
+            error: error.message
+          });
+        } else {
+          logger.error(`Step ${step.name} failed after ${retryCount} retries`, {
+            step: step.name,
+            error: error.message,
+            retryCount,
+            duration,
+            circuitBroken
+          });
+        }
+        
+        // Try fallback if provided
+        const fallbacks = Array.isArray(step.fallbacks) 
+          ? step.fallbacks 
+          : step.fallback 
+          ? [step.fallback] 
+          : [];
+        
+        if (fallbacks.length > 0) {
+          logger.info(`Attempting fallback for step: ${step.name}`, {
+            fallbackCount: fallbacks.length
+          });
+          
+          let fallbackError = error;
+          let fallbackResult: any = null;
+          let usedFallbackStrategy: string | undefined;
+          
+          // Try multiple fallbacks in order
+          for (const fallback of fallbacks) {
+            try {
+              fallbackResult = await fallbackExecutor.execute(fallbackError, context, fallback);
+              usedFallbackStrategy = typeof fallback === 'function' 
+                ? 'function' 
+                : (fallback as FallbackConfig).strategy;
+              
+              logger.info(`Fallback succeeded for step: ${step.name}`, {
+                strategy: usedFallbackStrategy
+              });
+              
+              results[step.name] = {
+                data: fallbackResult,
+                status: 'success',
+                duration,
+                retryCount,
+                metadata: { ...step.metadata, usedFallback: true, fallbackStrategy: usedFallbackStrategy },
+                fallbackUsed: true,
+                circuitBroken
+              };
+              break; // Stop after first successful fallback
+            } catch (fallbackError: any) {
+              logger.warn(`Fallback failed for step: ${step.name}`, {
+                strategy: typeof fallback === 'function' ? 'function' : (fallback as FallbackConfig).strategy,
+                error: fallbackError.message
+              });
+              lastError = fallbackError;
+            }
+          }
+          
+          if (fallbackResult) {
+            continue; // Move to next step
           }
         }
         
-        if (fallbackResult) {
-          continue; // Move to next step
+        // Record failure
+        results[step.name] = {
+          error: lastError.message,
+          status: 'failed',
+          duration,
+          retryCount,
+          metadata: step.metadata,
+          circuitBroken
+        };
+        errors.push(lastError);
+        
+        // Call step's onError callback if provided
+        if (step.onError) {
+          step.onError(lastError, context);
         }
-      }
-      
-      // Record failure
-      results[step.name] = {
-        error: lastError.message,
-        status: 'failed',
-        duration,
-        retryCount,
-        metadata: step.metadata,
-        circuitBroken
-      };
-      errors.push(lastError);
-      
-      // Call step's onError callback if provided
-      if (step.onError) {
-        step.onError(lastError, context);
-      }
-      
-      // Stop if configured to stop on failure
-      if (config.stopOnFailure) {
-        logger.warn(`Stopping orchestration due to failed step: ${step.name}`);
-        break;
+        
+        // Stop if configured to stop on failure
+        if (config.stopOnFailure) {
+          logger.warn(`Stopping orchestration due to failed step: ${step.name}`);
+          break;
+        }
       }
     }
   }
@@ -361,4 +404,142 @@ function shouldAbortRetry(error: any): boolean {
   }
   
   return false;
+}
+
+async function executeStepsInParallel(
+  steps: StepConfig[],
+  context: any,
+  options: {
+    maxConcurrent: number;
+    logger: any;
+    pRetry: any;
+    AbortError: any;
+    circuitBreaker: any;
+    defaultCircuitBreaker?: CircuitBreakerConfig;
+    fallbackExecutor: FallbackExecutor;
+  }
+): Promise<void> {
+  const { maxConcurrent, logger, pRetry, AbortError, circuitBreaker, defaultCircuitBreaker, fallbackExecutor } = options;
+
+  const concurrency = Number.isFinite(maxConcurrent) ? Math.max(1, maxConcurrent) : steps.length;
+
+  // Create a queue for controlling concurrency
+  const QueueModule = await import('p-queue');
+  const queue = new QueueModule.default({
+    concurrency,
+    autoStart: true
+  });
+
+  const executions = steps.map(step =>
+    queue.add(async () => {
+      const stepStart = Date.now();
+
+      try {
+        const data = await executeStepWithFeatures(step, context, {
+          retries: step.retries !== undefined ? step.retries : context.config.maxRetries || 0,
+          timeout: step.timeout || context.config.timeout,
+          logger,
+          stepName: step.name,
+          pRetry,
+          AbortError,
+          circuitBreaker,
+          circuitConfig: step.circuitBreaker || defaultCircuitBreaker
+        });
+
+        const duration = Date.now() - stepStart;
+
+        context.results[step.name] = {
+          data,
+          status: 'success',
+          duration,
+          retryCount: 0,
+          metadata: step.metadata,
+          circuitBroken: false
+        };
+
+        logger.info(`Parallel step ${step.name} succeeded`, {
+          step: step.name,
+          duration,
+          executedInParallel: true
+        });
+
+        if (step.onSuccess) {
+          step.onSuccess(data, context);
+        }
+
+      } catch (error: any) {
+        const duration = Date.now() - stepStart;
+
+        // Try fallbacks similar to sequential path
+        const fallbacks = Array.isArray(step.fallbacks)
+          ? step.fallbacks
+          : step.fallback
+          ? [step.fallback]
+          : [];
+
+        if (fallbacks.length > 0) {
+          logger.info(`Attempting fallback for parallel step: ${step.name}`, { fallbackCount: fallbacks.length });
+
+          let fallbackResult: any = null;
+          let usedFallbackStrategy: string | undefined;
+          let fallbackErrorRef = error;
+
+          for (const fallback of fallbacks) {
+            try {
+              fallbackResult = await fallbackExecutor.execute(fallbackErrorRef, context, fallback);
+              usedFallbackStrategy = typeof fallback === 'function' ? 'function' : (fallback as FallbackConfig).strategy;
+
+              logger.info(`Fallback succeeded for parallel step: ${step.name}`, { strategy: usedFallbackStrategy });
+
+              context.results[step.name] = {
+                data: fallbackResult,
+                status: 'success',
+                duration,
+                retryCount: 0,
+                metadata: { ...step.metadata, usedFallback: true, fallbackStrategy: usedFallbackStrategy },
+                fallbackUsed: true,
+                circuitBroken: false
+              };
+              break;
+            } catch (fbErr: any) {
+              logger.warn(`Parallel fallback failed for step: ${step.name}`, {
+                strategy: typeof fallback === 'function' ? 'function' : (fallback as FallbackConfig).strategy,
+                error: fbErr.message
+              });
+              fallbackErrorRef = fbErr;
+            }
+          }
+
+          if (fallbackResult) {
+            return;
+          }
+        }
+
+        logger.error(`Parallel step ${step.name} failed`, {
+          step: step.name,
+          error: error.message,
+          duration,
+          executedInParallel: true
+        });
+
+        // Record failure
+        context.results[step.name] = {
+          error: error.message,
+          status: 'failed',
+          duration,
+          retryCount: 0,
+          metadata: step.metadata,
+          circuitBroken: false
+        };
+
+        context.errors.push(error);
+
+        if (step.onError) {
+          step.onError(error, context);
+        }
+      }
+    })
+  );
+
+  await Promise.all(executions);
 }

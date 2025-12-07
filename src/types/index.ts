@@ -64,23 +64,12 @@ export interface OrchestrationContext {
   cache?: Record<string, any>;
 }
 
-export interface OrchestrationConfig {
-  maxRetries?: number;
-  timeout?: number;
-  parallel?: boolean;
-  stopOnFailure?: boolean;
-  sharedData?: Record<string, any>;
-  logger?: Logger;
-  plugins?: any[];
-  enableCaching?: boolean;
-  defaultCircuitBreaker?: CircuitBreakerConfig;
-}
 
 export interface Logger {
-  info: (message: string, meta?: Record<string, any>) => void;
-  error: (message: string, meta?: Record<string, any>) => void;
-  warn: (message: string, meta?: Record<string, any>) => void;
-  debug: (message: string, meta?: Record<string, any>) => void;
+  info?: (message: string, meta?: Record<string, any>) => void;
+  error?: (message: string, meta?: Record<string, any>) => void;
+  warn?: (message: string, meta?: Record<string, any>) => void;
+  debug?: (message: string, meta?: Record<string, any>) => void;
 }
 
 export interface OrchestrationResult {
@@ -90,4 +79,26 @@ export interface OrchestrationResult {
   errors: Error[];
   sharedData: Record<string, any>;
   circuitBreakers?: Record<string, any>;
+}
+export interface StepDependencyGraph {
+  [stepName: string]: string[];
+}
+
+export interface ParallelExecutionGroup {
+  steps: StepConfig[];
+  canExecute: boolean;
+  dependsOn: string[];
+}
+
+export interface OrchestrationConfig {
+  maxRetries?: number;
+  timeout?: number;
+  parallel?: boolean | number; // true = all parallel, number = max concurrent
+  stopOnFailure?: boolean;
+  sharedData?: Record<string, any>;
+  logger?: Logger;
+  plugins?: any[];
+  enableCaching?: boolean;
+  defaultCircuitBreaker?: CircuitBreakerConfig;
+  maxConcurrent?: number; // Max parallel steps at once
 }
