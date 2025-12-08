@@ -1,104 +1,111 @@
-export type StepStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'cancelled';
+export type FailureType = 'timeout' | 'retryable' | 'auth' | 'rate-limit' | 'unknown';
 
-export interface StepResult<T = any> {
-  data?: T;
-  error?: Error;
-  status: StepStatus;
-  duration: number;
-  retryCount: number;
-  metadata?: Record<string, any>;
-  fallbackUsed?: boolean;
-  circuitBroken?: boolean;
+export interface RetryPolicy {
+  retries: number;
+  backoffFactor: number;
+  baseDelay: number;
+  maxDelay: number;
+  jitter: boolean;
+  classifyError?: (error: unknown) => FailureType;
+  onRetry?: (info: RetryInfo) => void | Promise<void>;
 }
 
-export type FallbackStrategy = 
-  | 'static-value' 
-  | 'cached-data' 
-  | 'alternative-api' 
-  | 'degraded-mode' 
-  | 'custom';
-
-export interface FallbackConfig<T = any> {
-  strategy: FallbackStrategy;
-  value?: T;
-  cacheKey?: string;
-  alternativeStep?: string;
-  degradedHandler?: (context: any) => Promise<T>;
-  customHandler?: (error: Error, context: any) => Promise<T>;
-  conditions?: {
-    errorCodes?: string[];
-    maxRetriesExceeded?: boolean;
-    timeoutExceeded?: boolean;
-  };
-}
-
-export interface CircuitBreakerConfig {
-  enabled: boolean;
-  failureThreshold: number;
-  resetTimeout: number;
-  halfOpenMaxAttempts?: number;
-}
-
-export interface StepConfig<T = any, R = any> {
-  name: string;
-  execute: (context: any) => Promise<R>;
-  retries?: number;
-  timeout?: number;
-  fallback?: FallbackConfig<R> | ((error: Error, context: any) => Promise<R>);
-  fallbacks?: FallbackConfig<R>[];
-  circuitBreaker?: CircuitBreakerConfig;
-  dependsOn?: string[];
-  enabled?: boolean | ((context: any) => boolean);
-  onSuccess?: (result: R, context: any) => void;
-  onError?: (error: Error, context: any) => void;
-  metadata?: Record<string, any>;
-}
-
-export interface OrchestrationContext {
-  results: Record<string, StepResult>;
-  sharedData: Record<string, any>;
+export interface RetryInfo {
+  step: string;
   attempt: number;
-  startTime: number;
-  config: OrchestrationConfig;
-  circuitBreakers?: Record<string, any>;
-  cache?: Record<string, any>;
+  error: unknown;
+  delay: number;
 }
 
-
-export interface Logger {
-  info?: (message: string, meta?: Record<string, any>) => void;
-  error?: (message: string, meta?: Record<string, any>) => void;
-  warn?: (message: string, meta?: Record<string, any>) => void;
-  debug?: (message: string, meta?: Record<string, any>) => void;
+export interface TimeoutOptions {
+  timeoutMs?: number;
 }
 
-export interface OrchestrationResult {
-  success: boolean;
-  results: Record<string, StepResult>;
-  duration: number;
-  errors: Error[];
-  sharedData: Record<string, any>;
-  circuitBreakers?: Record<string, any>;
-}
-export interface StepDependencyGraph {
-  [stepName: string]: string[];
-}
-
-export interface ParallelExecutionGroup {
-  steps: StepConfig[];
-  canExecute: boolean;
-  dependsOn: string[];
-}
-
-export interface OrchestrationConfig {
-  maxRetries?: number;
+export interface StepConfig {
+  name: string;
+  execute: (context: StepContext) => Promise<any>;
   timeout?: number;
-  parallel?: boolean | number; // true = all parallel, number = max concurrent
-  stopOnFailure?: boolean;
-  sharedData?: Record<string, any>;
-  logger?: Logger;
-  plugins?: any[];
-  enableCaching?: boolean;
-  defaultCircuitBreaker?: CircuitBreakerConfig;
-  maxConcurrent?: number; // Max parallel steps at once
+  retries?: number;
+  delay?: number;
+  fallbackValue?: any;
+  fallbackStep?: (context: StepContext) => Promise<any>;
+  parallel?: boolean;
 }
+
+export interface StepContext {
+  data: Record<string, unknown>;
+  get: <T = unknown>(path: string) => T | undefined;
+  signal: AbortSignal;
+  attempt: number;
+}
+
+export interface OrchestrateConfig {
+  timeout?: number;
+  retries?: number;
+  delay?: number;
+  jitter?: boolean;
+  backoffFactor?: number;
+  maxDelay?: number;
+  throttle?: ThrottleConfig;
+  plugins?: OrchestratorPlugin[];
+  authRefresh?: (context: StepContext) => Promise<void>;
+  signal?: AbortSignal;
+}
+
+export interface ThrottleConfig {
+  concurrency?: number;
+  perSecond?: number;
+  adaptive?: boolean;
+}
+
+export interface OrchestrateError {
+  type: 'timeout' | 'retry-failed' | 'auth' | 'rate-limit' | 'unknown';
+  step: string;
+  message: string;
+  attempt: number;
+  metadata?: any;
+}
+
+export interface OrchestrateResult {
+  success: boolean;
+  results: Record<string, unknown>;
+  errors?: OrchestrateError[];
+  getEvents: () => TelemetryEvent[];
+}
+
+export interface TelemetryEvent {
+  type: string;
+  timestamp: number;
+  step?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface PluginContext {
+  step?: StepConfig;
+  attempt?: number;
+  error?: unknown;
+  rateLimit?: RateLimitInfo;
+  timeoutMs?: number;
+  retryInfo?: RetryInfo;
+  events: TelemetryEvent[];
+  contextSnapshot: Record<string, unknown>;
+}
+
+export interface RateLimitInfo {
+  resetInMs?: number;
+  retryAfterMs?: number;
+  remaining?: number;
+}
+
+export interface OrchestratorPlugin {
+  name: string;
+  beforeStart?: (ctx: PluginContext) => void | Promise<void>;
+  beforeStep?: (ctx: PluginContext) => void | Promise<void>;
+  afterStep?: (ctx: PluginContext) => void | Promise<void>;
+  onRetry?: (ctx: PluginContext) => void | Promise<void>;
+  onTimeout?: (ctx: PluginContext) => void | Promise<void>;
+  onRateLimit?: (ctx: PluginContext) => void | Promise<void>;
+  onError?: (ctx: PluginContext) => void | Promise<void>;
+  afterEnd?: (ctx: PluginContext) => void | Promise<void>;
+}
+

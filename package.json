@@ -1,39 +1,46 @@
 {
   "name": "api-orchestrator-ts",
-  "version": "0.1.0",
-  "description": "A lightweight TypeScript library for managing complex API workflows",
+  "version": "1.0.0",
+  "description": "Production-ready API orchestrator with retries, timeouts, plugins, and smart throttling.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json",
     "dev": "tsc --watch",
-    "example": "npx ts-node examples/basic-usage.ts",
-    "retry-demo": "npx ts-node examples/retry-demo.ts",
-    "fallback-demo": "npx ts-node examples/fallback-demo.ts",
-     "parallel-demo": "npx ts-node examples/parallel-demo.ts",
-    "start": "node dist/index.js",
-    "clean": "rm -rf dist",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest",
+    "example:basic": "ts-node examples/basic.ts",
+    "example:parallel": "ts-node examples/parallel.ts",
+    "example:timeout": "ts-node examples/timeout.ts",
+    "example:fallback": "ts-node examples/fallback.ts",
+    "example:full": "ts-node examples/full-demo.ts"
   },
   "keywords": [
     "api",
     "orchestration",
+    "workflows",
     "typescript",
-    "workflow"
+    "resilience",
+    "retry",
+    "throttling",
+    "observability"
   ],
   "author": "Robi Kas",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/p-retry": "^3.0.1",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.0.0"
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.12.12",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
   },
   "dependencies": {
-    "p-queue": "^7.0.0",
-    "p-retry": "^4.6.2"
+    "p-queue": "^7.4.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
