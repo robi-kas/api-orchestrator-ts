@@ -18,6 +18,13 @@ Production-ready API Orchestrator for TypeScript inspired by Temporal, Step Func
 
 ## Installation
 
+Install via npm:
+
+```bash
+npm i api-orchestrator-ts
+```
+Then build your project if you're working locally:
+
 ```bash
 npm install
 npm run build
